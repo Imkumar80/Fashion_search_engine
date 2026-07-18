@@ -116,7 +116,7 @@ The system is split into two distinct workflows: the offline indexing pipeline a
 Fashion_search_engine/
 ├── core/
 │   ├── indexing_pipeline.ipynb   # Colab notebook for the offline indexing pipeline
-│   ├── retrieval.py              # CLI script for the online retrieval pipeline
+│   ├── retrieval_pipeline.ipynb  # Colab notebook for the online retrieval pipeline
 │   ├── fashion_search_hnsw.faiss # Generated FAISS vector index
 │   └── images_metadata.parquet   # Metadata mapping FAISS IDs to image paths/captions
 ├── data/
@@ -161,10 +161,7 @@ You can run the Jupyter notebooks (`indexing_pipeline.ipynb` and `retrieval_pipe
 pip install jupyterlab
 jupyter lab
 ```
-Alternatively, if you have extracted the retrieval logic into `core/retrieval.py`, you can run it via the terminal:
-```bash
-python core/retrieval.py
-```
+
 
 ---
 
