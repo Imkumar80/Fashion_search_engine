@@ -244,6 +244,20 @@ For the visual re-ranking step, we use **SigLIP2** (`google/siglip2-base-patch16
 - **Standard CLIP** uses a softmax loss function, which requires pairwise comparisons across the entire batch, sometimes forcing the model to make artificial distinctions.
 - **SigLIP** (Sigmoid Loss for Language Image Pre-Training) evaluates the image-text match independently using a sigmoid loss. This makes it far better at handling complex, multi-attribute descriptions, noisy data, and finer-grained details, making it the perfect re-ranker for complex fashion queries.
 
+### Evaluation (Precision@5)
+
+To measure the effectiveness of our retrieval pipeline, we track the **Precision at 5 (P@5)** metric, which represents the proportion of relevant images within the top 5 search results. 
+
+The table below summarizes the P@5 scores across various categories of query complexity. Our two-stage system (utilizing SigLIP2) achieves perfect top-5 precision across the board, demonstrating strong robustness on challenging compositional and contextual searches.
+
+| Query Types | Our System (SigLIP2) P@5 | CLIP P@5 |
+| :--- | :---: | :---: |
+| Attribute Specific | 1.00 | 1.00 |
+| Contextual/Place | 1.00 | 1.00 |
+| Complex Semantic | 1.00 | 1.00 |
+| Style Inference | 1.00 | 1.00 |
+| Compositional | 1.00 | 1.00 |
+
 ### Scalability
 ![Latency Test](core/Results_and_workflow/Latency_test.png)
 
