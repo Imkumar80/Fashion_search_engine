@@ -108,6 +108,8 @@ The system is split into two distinct workflows: the offline indexing pipeline a
                 Final Ranked Images
 ```
 
+![Retrieval Pipeline Example](core/Results_and_workflow/retrieval_pipeline_fixed_colors.png)
+
 ---
 
 ## Project Structure
@@ -244,6 +246,8 @@ For the visual re-ranking step, we use **SigLIP2** (`google/siglip2-base-patch16
 - **SigLIP** (Sigmoid Loss for Language Image Pre-Training) evaluates the image-text match independently using a sigmoid loss. This makes it far better at handling complex, multi-attribute descriptions, noisy data, and finer-grained details, making it the perfect re-ranker for complex fashion queries.
 
 ### Scalability
+![Latency Test](core/Results_and_workflow/Latency_test.png)
+
 - **Storage & Search:** The dense text embeddings are stored in a FAISS HNSW index, which scales to millions of vectors with sub-millisecond retrieval times.
 - **Compute:** The heavy VLM extraction (Qwen3-VL) is strictly an *offline* process. The online pipeline only requires a lightweight LLM (Qwen2.5 0.5B), a text embedder (BGE-M3), and a small vision model (SigLIP base) for re-ranking, making real-time search extremely fast and computationally inexpensive (running comfortably on a 4GB VRAM GPU).
 
