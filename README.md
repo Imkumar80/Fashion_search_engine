@@ -108,7 +108,6 @@ The system is split into two distinct workflows: the offline indexing pipeline a
                 Final Ranked Images
 ```
 
-![Retrieval Pipeline Example](core/Results_and_workflow/retrieval_pipeline_fixed_colors.png)
 
 ---
 
