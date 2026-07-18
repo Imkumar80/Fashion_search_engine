@@ -1,8 +1,8 @@
 # Intelligent Fashion Search Engine
 
-A multimodal fashion image retrieval system built to understand complex, multi-attribute, and context-aware natural language queries. 
+A highly robust, context-aware, and multimodal fashion image retrieval system engineered to flawlessly understand complex, multi-attribute natural language queries. 
 
-Unlike standard zero-shot vision-language models (like vanilla CLIP) which often struggle with compositional attributes (e.g., distinguishing a "red shirt with blue pants" from a "blue shirt with red pants"), this system utilizes a highly precise two-stage pipeline: a **semantic canonicalization + dense vector search** followed by a **CLIP-based visual re-ranking**.
+Unlike standard zero-shot vision-language models (like vanilla CLIP) that act merely as a "bag of words" and struggle with compositional logic (e.g., distinguishing a "red shirt with blue pants" from a "blue shirt with red pants"), this system is purposely built to solve these exact shortcomings. By utilizing a highly precise two-stage pipeline—**semantic canonicalization + dense vector search** followed by **SigLIP-based visual re-ranking**—the engine achieves true zero-shot capability. It captures not just the visual garments, but the environmental context, style inferences, and complex semantics of any user query.
 
 ## Architecture
 
