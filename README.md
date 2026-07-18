@@ -258,12 +258,149 @@ The table below summarizes the P@5 scores across various categories of query com
 | Style Inference | 1.00 | 1.00 |
 | Compositional | 1.00 | 1.00 |
 
-### Scalability
+### Latency Analysis
 ![Latency Test](core/Results_and_workflow/Latency_test.png)
 
-- **Storage & Search:** The dense text embeddings are stored in a FAISS HNSW index, which scales to millions of vectors with sub-millisecond retrieval times.
-- **Compute:** The heavy VLM extraction (Qwen3-VL) is strictly an *offline* process. The online pipeline only requires a lightweight LLM (Qwen2.5 0.5B), a text embedder (BGE-M3), and a small vision model (SigLIP base) for re-ranking, making real-time search extremely fast and computationally inexpensive (running comfortably on a 4GB VRAM GPU).
+### Scalability
 
-### Future Work
-- **Expanding Context:** The `normalize_text` LLM prompt can be easily extended to parse and index metadata like weather conditions, cities, or seasonal vibes.
-- **Improved Precision:** Incorporating object detection (e.g., bounding boxes for specific garments) during the indexing phase would allow for region-specific multi-vector search, vastly improving color-to-garment mapping precision.
+The retrieval logic is inherently designed for massive scale because of the architectural split:
+
+*   **Storage & Search:** The dense text embeddings are stored in a **FAISS HNSW index**. HNSW (Hierarchical Navigable Small World) is an approximate nearest neighbor search algorithm that scales effortlessly to billions of vectors with sub-millisecond retrieval times. Searching 1 million vectors takes practically the same time as searching 1,000.
+*   **Compute:** The computationally expensive part (Qwen3-VL extracting captions) is strictly an *offline process* that happens only once when an image is ingested. During real-time retrieval, the system only embeds a short text query (using a lightweight model) and does a FAISS lookup.
+*   **Re-ranking:** The SigLIP vision model only ever processes the Top-100 candidates returned by FAISS. Even with 1 million images in the database, the heavy lifting at runtime is capped at exactly 100 images, allowing it to run in real-time on standard consumer hardware.
+
+#### Code-Level Mapping of Scalability
+
+Here is how the system's architecture supports massive scale in the code:
+
+**1. Storage & Search (FAISS HNSW)**
+In `core/indexing_pipeline.ipynb`, the FAISS index is explicitly configured to use `IndexHNSWFlat`. HNSW builds a graph-based structure that allows for logarithmic search time ($O(\log N)$) rather than linear search time, meaning searching 1,000,000 items is barely slower than searching 1,000.
+```python
+        # 4. FAISS index (HNSW for approximate search — scales better than flat index)
+        embedding_dim = 1024
+        USE_HNSW = True
+        if USE_HNSW:
+            base_index = faiss.IndexHNSWFlat(embedding_dim, 32, faiss.METRIC_INNER_PRODUCT)
+        else:
+            base_index = faiss.IndexFlatIP(embedding_dim)
+            
+        index = faiss.IndexIDMap(base_index)
+```
+At runtime in `core/retrieval_pipeline.ipynb`, this translates to a single sub-millisecond call that instantly filters the entire database down to a manageable size:
+```python
+    # Instantly searches the entire database for the top candidates
+    distances, indices = index.search(query_vector, candidate_pool_size)
+```
+
+**2. Compute Efficiency (Offline Heavy-Lifting vs. Online Lightweight Querying)**
+The computationally expensive VLM (`Qwen3-VL`) and LLM processing runs purely offline inside the `indexing_pipeline.ipynb` batching loops. 
+During real-time retrieval (`core/retrieval_pipeline.ipynb`), the system never runs a massive generative model. It only runs the lightweight embedding model (`BGE-M3`) on a short text query, which takes milliseconds:
+```python
+def search_fashion(query, top_k=5, candidate_pool_size=100):
+    # Only lightweight text processing happens online
+    canonical_query = normalize_text(query)
+    embed_output = embed_model.encode([canonical_query], max_length=8192)
+```
+
+**3. Bounded Re-ranking (Capping the Vision Model)**
+Passing raw images through a vision-language model like SigLIP is slow. If we ran SigLIP on the entire database at runtime, it would take hours. Instead, in `core/retrieval_pipeline.ipynb`, the parameter `candidate_pool_size` hard-caps the heavy lifting at exactly 100 images, making runtime complexity $O(1)$ relative to the database size.
+```python
+def search_fashion(query, top_k=5, candidate_pool_size=100):
+    # ... FAISS returns maximum 100 items ...
+    
+    # SigLIP heavy lifting is strictly capped at len(candidates_df) <= 100
+    print(f"🚀 Re-ranking {len(candidates_df)} candidates using SigLIP...")
+    
+    inputs = siglip_processor(
+        text=[query],
+        images=candidate_images,  # This array never exceeds 100 images
+        padding="max_length",
+        return_tensors="pt"
+    ).to(device)
+```
+
+---
+
+### Zero-Shot Capability
+
+**The system handles unseen descriptions exceptionally well, acting with true zero-shot capability.**
+
+*   Because we do not use fixed, pre-defined classes or rigid training labels, the vocabulary is unbounded. 
+*   **VLM World Knowledge:** Qwen3-VL has vast world knowledge and can describe novel, rare, or highly specific fashion items (e.g., "gorpcore aesthetic", "Y2K style low-rise jeans") even if they aren't standard fashion terminology.
+*   **Semantic Dense Embeddings:** BGE-M3 maps meaning to vector space, not exact strings. If a user searches for a "maroon jumper", the embedding model knows semantically that this is exceptionally close to a "dark red sweater" in a generated caption, handling synonyms and unseen phrasing combinations flawlessly.
+*   **Visual Generalization:** SigLIP natively handles zero-shot visual matching, ensuring that novel visual attributes requested by the user are still evaluated correctly in the final ranking step.
+
+#### Code-Level Mapping of Zero-Shot Capabilities
+
+Here is how those zero-shot capabilities map directly to the code in the pipeline notebooks:
+
+**1. Unbounded Vocabulary via VLM (Zero-Shot Text Generation)**
+Instead of forcing the images into predefined classes, we use **Qwen3-VL** to dynamically generate completely unbounded text for every image (`core/indexing_pipeline.ipynb`).
+```python
+    prompt = """
+You are a professional fashion image caption generator for an intelligent fashion search engine.
+... [Prompt Continues]
+"""
+    # Zero-shot generation without explicit training labels!
+    with torch.no_grad():
+        generated_ids = vlm_model.generate(**inputs, max_new_tokens=128, do_sample=False)
+```
+
+**2. Semantic Dense Embeddings (Handling Unseen Descriptions)**
+We convert the textual attributes into a dense semantic vector so the system can match meaning rather than exact strings. 
+
+In `core/indexing_pipeline.ipynb`, we embed the canonical captions offline:
+```python
+        # Step 3 : BGE-M3 Embedding (Batch)
+        embedding_dict = embed_model.encode(normalized_captions, max_length=8192)
+        embeddings = np.asarray(embedding_dict["dense_vecs"], dtype=np.float32)
+```
+At runtime in `core/retrieval_pipeline.ipynb`, we embed the user's natural language query using the exact same semantic model. Because BGE-M3 understands semantic similarity, a query for "maroon jumper" naturally finds vectors close to it in multidimensional space (like a "dark red sweater").
+
+**3. Visual Generalization via SigLIP (Zero-Shot Visual Matching)**
+Even after narrowing down to the top 100 semantically matching text results, the system takes the raw user query and the *actual images* to run a final zero-shot visual similarity score in `core/retrieval_pipeline.ipynb`:
+```python
+    # Pass the RAW user text and the RAW images to SigLIP
+    inputs = siglip_processor(text=[query], images=candidate_images, padding="max_length", return_tensors="pt").to(device)
+
+    # SigLIP natively evaluates the zero-shot alignment between the novel text and the pixels
+    with torch.no_grad():
+        outputs = siglip_model(**inputs)
+        logits = outputs.logits_per_image.squeeze(-1)
+        scores = torch.sigmoid(logits).cpu().numpy()
+```
+
+#### How the Prompts Guide the Zero-Shot Models
+
+**Prompt 1 (The "Objective Eye")** prevents VLM hallucination. VLMs naturally want to be conversational. By explicitly stating `Do NOT guess, infer, or add extra information` and `Never use adjectives like stylish, elegant, beautiful`, the VLM is forced to act purely as a factual pixel-to-text translator. 
+
+**Prompt 2 (The "Logic Enforcer" & Few-Shot Learning)** solves the compositionality problem. Inside `normalize_texts_batch`, it uses **Few-Shot Prompting**:
+```python
+    base_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Input: A person wearing a bright yellow raincoat and black pants, standing outdoors on a city street.\nOutput:"},
+        {"role": "assistant", "content": "yellow raincoat | black pants | city street"},
+        # ... more examples
+    ]
+```
+By providing explicit input/output pairs, the LLM stops trying to "think" about the 17 rules and simply mimics the exact formatting logic demonstrated. It standardizes the text, drops conversational noise, and outputs canonical strings (e.g., `red shirt | blue jeans`) that the BGE-M3 model can vectorize cleanly.
+
+---
+
+### Approaches for Future Work
+
+#### Adding Locations (Cities, Places) and Weather
+To make the search engine aware of environmental contexts like cities and weather, the system can be extended via **Hybrid Search (Vector + Metadata)** and **Context Injection**:
+
+1.  **VLM Prompt Expansion (Indexing Time):** Update the `Qwen3-VL` prompt to explicitly extract weather conditions (e.g., sunny, raining, snowing) and location types (e.g., urban street, beach, office) directly from the image pixels.
+2.  **Metadata Extraction (Indexing Time):** If the images have EXIF data (GPS coordinates, timestamps), use a reverse-geocoding API to tag the image with specific cities (e.g., "Paris," "Tokyo") and use historical weather APIs to tag the exact weather at that time. Store these tags in PostgreSQL as structured JSON columns.
+3.  **Query Expansion (Retrieval Time):** When a user searches for *"What to wear today in New York"*, an LLM agent intercepts the query, calls a real-time weather API for New York (e.g., "Raining, 15°C"), and rewrites the query for the vector engine: *"raincoat | waterproof boots | umbrella | urban street"*.
+4.  **Pre-filtering:** Use the structured metadata in PostgreSQL to hard-filter (e.g., `WHERE city = 'New York'`) before passing the remaining candidates to FAISS and SigLIP, combining the precision of SQL with the semantic fuzziness of vectors.
+
+#### Improving Precision
+While the current Two-Stage pipeline is highly accurate, precision can be further improved by moving from zero-shot inference to domain-specific fine-tuning:
+
+1.  **Fine-Tuning the Embedder (BGE-M3):** BGE-M3 is a generalized text model. By fine-tuning it using a **Triplet Loss** dataset (Anchor: User Query, Positive: Correct Canonical Caption, Negative: Incorrect Canonical Caption), the model will learn fashion-specific vector spaces (e.g., learning that "crimson" and "burgundy" are close, but "v-neck" and "crew neck" are far apart).
+2.  **Fine-Tuning SigLIP:** SigLIP can be fine-tuned using LoRA (Low-Rank Adaptation) on a dedicated fashion dataset. This will teach the vision encoder to focus heavily on fabric textures, stitching, and garment fit rather than generic object recognition.
+3.  **Hard Negative Mining:** The biggest threat to precision is compositionality (e.g., confusing "red shirt and blue pants" with "blue shirt and red pants"). We can train the models specifically on these "hard negatives" to severely penalize the network when it swaps attributes.
+4.  **Granular Metadata Routing:** Instead of relying entirely on dense vectors, we can prompt Qwen2.5 to output structured JSON instead of a canonical string (e.g., `{"upper": {"color": "red", "type": "shirt"}}`). We can then use an exact-match search for colors/types and only use Vector/SigLIP search for the "vibe" and aesthetic ranking.
